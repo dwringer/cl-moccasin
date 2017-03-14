@@ -1,12 +1,17 @@
 (in-package :common-lisp-user)
 
 (defpackage :cl-moccasin
-  (:use :common-lisp))
+  (:use :common-lisp
+	:common-lisp-user)
+  (:export :py-start
+	   :py-send
+	   :py-recv
+	   :py-wait))
 
 (in-package :cl-moccasin)
 
 (defparameter *python-program* nil)
-
+(defparameter *python-programs* (make-hash-table :test 'equal))
 
 (defun program-stream (program &optional args)
   "Create a two-way stream for a new instance of program [w/arguments]"
@@ -20,7 +25,8 @@
 			   (sb-ext:process-input process)))))
 
 
-(defun print-strings (string-list &optional (separator ""))
+(defun print-strings (string-list
+		      &optional (separator (format nil "~C" #\newline)))
   "Print a joined list of strings to the REPL [with optional separator]"
   (when (> (length string-list) 0)
     (let ((acc (elt string-list 0)))
@@ -74,37 +80,50 @@
   (finish-output stream))
 
 
-(defun py-start (&optional (path "C:/DWR/Main/pob/Scripts/python.exe"))
-  "Instantiate two-way stream *python-program* for an inferior Python process."
-  (defparameter *python-program* (program-stream path '("-i"))))
+(defun py-start (&key
+		   (path "C:/DWR/Main/pob/Scripts/python.exe")
+		   (identifier (gensym "py-iostream-")))
+  "Instantiate two-way stream for a Python process and keep global reference."
+  (if (null identifier)
+      (setf *python-program* (program-stream path '("-i")))
+      (setf (gethash identifier *python-programs*)
+	    (program-stream path '("-i"))))
+  identifier)
 
 
-(defun py-send (string)
+(defun py-send (string &optional (identifier nil))
   "Send the given string to *python-program*, then finish-output."
-  (write-finished-line string *python-program*))
+  (if (null identifier)
+      (write-finished-line string *python-program*)
+      (write-finished-line string (gethash identifier *python-programs*))))
 
 
-(defun py-recv ()
+(defun py-lines (&optional (identifier nil))
   "Retrieve current lines of output buffer from *python-program*"
-  (print-strings (mapcar #'trim-python-prompt
-			 (read-lines-no-hang *python-program*))
-		 (format nil "~C" #\newline)))
+  (mapcar #'trim-python-prompt
+	  (read-lines-no-hang
+	   (if (null identifier)
+	       *python-program*
+	       (gethash identifier *python-programs*)))))	      
 
 
-(defun py-wait ()
-  "Read lines from *python-program*, blocking until control is restored."
-  (let ((lines (mapcar #'trim-python-prompt
-		       (read-lines-no-hang *python-program*)))
+(defun py-recv (&optional (identifier nil))
+  "Print lines of buffered output from *python-program*"
+  (print-strings (py-lines identifier)))
+
+
+(defun py-wait (&optional (identifier nil))
+  "Read/print lines from *python-program*, blocking until control is restored."
+  (let ((lines (py-lines identifier))
 	(finished nil))
-    (py-send "()")
+    (py-send "()" identifier)
     (do ((i 0 (+ 1 i)))
-	(finished (print-strings lines (format nil "~C" #\newline)))
-      (let ((newlines (mapcar #'trim-python-prompt
-			      (read-lines-no-hang *python-program*))))
+	(finished (print-strings lines))
+      (let ((newlines (py-lines identifier)))
 	(when (not (null newlines))
 	  (when (string-equal (elt newlines (- (length newlines) 1)) "()")
 	    (setf newlines (subseq newlines 0 (- (length newlines) 1)))
 	    (setf finished t))
 	  (when (> (length newlines) 0)
-	    (print-strings lines (format nil "~C" #\newline))
+	    (print-strings lines)
 	    (setf lines newlines)))))))  
