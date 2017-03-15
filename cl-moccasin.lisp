@@ -5,6 +5,7 @@
   (:export :py-start
 	   :py-send
 	   :py-recv
+	   :py-peek
 	   :py-wait
 	   :py-kill
 	   :set-python-executable))
@@ -15,8 +16,10 @@
 
 (defparameter *python-stream* nil)
 (defparameter *python-process* nil)
+(defparameter *python-buffer* nil)
 (defparameter *python-streams* (make-hash-table :test 'equal))
 (defparameter *python-processes* (make-hash-table :test 'equal))
+(defparameter *python-buffers* (make-hash-table :test 'equal))
 
 
 (defun set-python-executable (path)
@@ -85,11 +88,14 @@
   "Get all available buffered lines in the stream, without blocking."
   (let ((acc nil)
 	(line nil)
-	(isnil nil))
+	(isnil nil)
+	(remain nil))
     (do ((i 0 (+ 1 i)))
-	(isnil (reverse acc))
+	(isnil (values (reverse acc) remain))
       (multiple-value-setq (line isnil) (read-line-no-hang stream))
-      (when (not isnil) (push line acc)))))
+      (if (not isnil)
+	  (push line acc)
+	  (setf remain line)))))
 
 
 (defun write-finished-line (string stream)
@@ -97,11 +103,11 @@
   (write-line string stream)
   (finish-output stream))
 
-
 (defun py-start (&key
-		   (path *python-executable*)
-		   (identifier (gensym "py-iostream-")))
+		   (identifier (gensym "py-iostream-"))
+		   (path *python-executable*))
   "Instantiate two-way stream for a Python process and keep local reference."
+  (declare (sb-ext:unmuffle-conditions style-warning))
   (multiple-value-bind (py-stream py-process) (program-stream path '("-i"))
     (if (null identifier)
 	(progn
@@ -123,11 +129,30 @@
 
 (defun py-lines (&optional (identifier nil))
   "Retrieve current lines of output buffer from python stream."
-  (mapcar #'trim-python-prompt
-	  (read-lines-no-hang
-	   (if (null identifier)
-	       *python-stream*
-	       (gethash identifier *python-streams*)))))	      
+  (let ((previous-remains (if (null identifier)
+			      *python-buffer*
+			      (gethash identifier *python-buffers*))))
+    (multiple-value-bind (lines remains)
+	(read-lines-no-hang (if (null identifier)
+				*python-stream*
+				(gethash identifier *python-streams*)))
+      (if (> (length lines) 0)
+	  (progn
+	    (if (null identifier)
+		(setf *python-buffer* nil)
+		(setf (gethash identifier *python-buffers*) nil))
+	    (if (not (null previous-remains))
+		(setf lines (cons (concatenate 'string
+					       previous-remains
+					       (car lines))
+				  (cdr lines)))))
+	  (setf remains (concatenate 'string previous-remains remains)))
+      (setf remains (trim-python-prompt remains))
+      (when (equal (length remains) 0) (setf remains nil))
+      (if (null identifier)
+	  (setf *python-buffer* remains)
+	  (setf (gethash identifier *python-buffers*) remains))
+      (mapcar #'trim-python-prompt lines))))
 
 
 (defun py-recv (&optional (identifier nil))
@@ -158,6 +183,15 @@
 		   (if (null identifier)
 		       *python-process*
 		       (gethash identifier *python-processes*)))))
+
+
+(defun py-peek (&optional (identifier nil))
+  "Peek at the contents of last-seen unterminated line in buffer (if any)."
+  (let ((py-buffer (if (null identifier)
+		       *python-buffer*
+		       (gethash identifier *python-buffers*))))
+    (when (not (null py-buffer))
+      (format t "~A" py-buffer))))
 
 
 (defun py-kill (&optional (identifier nil))
