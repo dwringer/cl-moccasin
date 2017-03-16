@@ -56,18 +56,19 @@
 ;;; Set *default-executable* to the full path of the default program
 ;;; to be run with (cl-moc:start) [start may also be called with the
 ;;; :path keyword, specifying an override to this default].  Set
-;;; *arguments* to be a list of strings to append to the program call
+;;; *default-arguments* to be a list of strings to append to the program call
 ;;; that will ensure that it launches in interactive mode using
 ;;; standard console I/O streams.
 
 (defparameter *default-executable* #P"python.exe")
-(defparameter *arguments* '("-i"))  ; Start executable in interpreter mode
-(defparameter *prompt* ">>> ")      ; Trimmed from output; REQUIRED
-(defparameter *prompts* (make-hash-table :test 'equal))
-
+(defparameter *default-arguments* '("-i"))  ; Start in interactive mode
+(defparameter *prompt* ">>> ")              ; Trimmed from output; REQUIRED
+(defparameter *test-string* "()")
 (defparameter *stream* nil)
 (defparameter *process* nil)
 (defparameter *buffer* nil)
+(defparameter *prompts* (make-hash-table :test 'equal))
+(defparameter *test-strings* (make-hash-table :test 'equal))
 (defparameter *streams* (make-hash-table :test 'equal))
 (defparameter *processes* (make-hash-table :test 'equal))
 (defparameter *buffers* (make-hash-table :test 'equal))
@@ -83,6 +84,13 @@
   (if (null identifier)
       (setf *prompt* prompt)
       (setf (gethash identifier *prompts*) prompt)))
+
+
+(defun set-test-string (test &optional (identifier nil))
+  "Assign a new TEST-STRING specification for specified process."
+  (if (null identifier)
+      (setf *test-string* test)
+      (setf (gethash identifier *test-strings*) test)))
 
 
 ;; Thanks to |3b| from #lisp on irc.freenode.net:
@@ -167,11 +175,17 @@
 (defun start (&key
 		(identifier (gensym "cl-moc-iostream-"))
 		(path *default-executable*)
-		(args *arguments*)
-		(prompt *prompt*))
+		(args *default-arguments*)
+		(prompt *prompt*)
+		(test *test-string*))
   "Instantiate two-way stream for interpreter process and keep reference."
-  (when (not (null identifier))
-    (setf (gethash identifier *prompts*) prompt))
+  (if (null identifier)
+      (progn
+	(setf *prompt* prompt)
+	(setf *test-string* test))
+      (progn
+	(setf (gethash identifier *prompts*) prompt)
+	(setf (gethash identifier *test-strings*) test)))
   (multiple-value-bind (stream process) (program-stream path args)
     (if (null identifier)
 	(progn
@@ -230,13 +244,16 @@
 (defun wait (&optional (identifier nil))
   "Read/print lines from stream, blocking until control is restored."
   (let ((lines (lines identifier))
-	(finished nil))
-    (send "()" identifier)
+	(finished nil)
+	(test (if (null identifier)
+		  *test-string*
+		  (gethash identifier *test-strings*))))
+    (send test identifier)
     (do ((i 0 (+ 1 i)))
 	(finished (print-strings lines))
       (let ((newlines (lines identifier)))
 	(when (not (null newlines))
-	  (when (string-equal (elt newlines (- (length newlines) 1)) "()")
+	  (when (string-equal (elt newlines (- (length newlines) 1)) test)
 	    (setf newlines (subseq newlines 0 (- (length newlines) 1)))
 	    (setf finished t))
 	  (when (> (length newlines) 0)
