@@ -60,7 +60,7 @@
 ;;; that will ensure that it launches in interactive mode using
 ;;; standard console I/O streams.
 
-(defparameter *default-executable* #P"C:/DWR/Main/pob/Scripts/python.exe")
+(defparameter *default-executable* #P"python.exe")
 (defparameter *arguments* '("-i"))  ; Start executable in interpreter mode
 (defparameter *prompt* ">>> ")      ; Trimmed from output; REQUIRED
 (defparameter *prompts* (make-hash-table :test 'equal))
