@@ -1,30 +1,115 @@
+;;;; cl-moccasin.lisp
+
+;;;; Copyright (C) 2017 Darren W. Ringer
+
+;;;; Permission is hereby granted, free of charge, to any person
+;;;; obtaining a copy of this software and associated documentation
+;;;; files (the "Software"), to deal in the Software without
+;;;; restriction, including without limitation the rights to use,
+;;;; copy, modify, merge, publish, distribute, sublicense, and/or sell
+;;;; copies of the Software, and to permit persons to whom the
+;;;; Software is furnished to do so, subject to the following
+;;;; conditions:
+
+;;;; The above copyright notice and this permission notice shall be
+;;;; included in all copies or substantial portions of the Software.
+
+;;;; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+;;;; EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+;;;; OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+;;;; NONINFRINGEMENT. IN NO EVENT SHALL THE X CONSORTIUM BE LIABLE FOR
+;;;; ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+;;;; CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+;;;; CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+;;;; SOFTWARE.
+
+;;;; Except as contained in this notice, the name of the author shall
+;;;; not be used in advertising or otherwise to promote the sale, use
+;;;; or other dealings in this Software without prior written
+;;;; authorization from the author.
+
 (in-package :common-lisp-user)
+
+;;; CL-MOCCASIN [SBCL-only]
+
+;;; This package provides a way to manage multiple subordinate
+;;; interactive console applications running in separate processes on
+;;; Microsoft Windows.  The primary motivation is to provide a simple
+;;; way to interact with interpreters for other high-level languages
+;;; like Python.
+
+;;; Currently this has only been tested with Python 2.7
+
+;;; Example:
+
+;;; CL-MOC> (start :identifier nil)      ; Launch default instance.
+;;; ; <OR>
+;;; CL-MOC> (defparameter *p1* (start))  ; Launch unique instance as *p1*.
+;;; NIL
+;;; CL-MOC> (wait)  ; Use (wait *p1*) to target *p1* instead of default.
+;;; Python 2.7.10 (default, ...   ; [abbreviated for example]
+;;; Type "help", "copyright", ... ; " " "
+;;; NIL
+;;; CL-MOC> (send "from my_module import MyClass")  ; [ ... *p1*)]
+;;; NIL
+;;; CL-MOC> (wait)
+;;; NIL  ; this implies success, otherwise we would see an error or be blocked.
+;;; CL-MOC> (send "MyClass().do_something()")  ; [ ... *p1*)]
+;;; NIL
+;;; CL-MOC> (recv)  ; [ ... *p1*)]
+;;; ; <<Finished lines of output from Python>>
+;;; CL-MOC> (peek)  ; [ ... *p1*)]
+;;; ; <<If there was an incomplete line during (recv), it is displayed here>>
+;;; CL-MOC> (wait)  ; [ ... *p1*)]
+;;; ; <<Blocks until line(s) terminated in Python and printed to REPL>>
+;;; NIL
+;;; CL-MOC> (kill)  ; [ ... *p1*)]
+;;; NIL  ; Process was successfully terminated.
 
 (defpackage :cl-moccasin
   (:use :common-lisp)
-  (:export :py-start
-	   :py-send
-	   :py-recv
-	   :py-peek
-	   :py-wait
-	   :py-kill
-	   :set-python-executable))
+  (:nicknames :cl-moc)
+  (:export :start  ; Launch a new subordinate process
+	   :send   ; Send to the process input stream
+	   :recv   ; Receive complete lines from process output stream
+	   :peek   ; Preview incomplete line from process output stream
+	   :wait   ; Read lines from process output until control returns
+	   :kill   ; Forcibly terminate the process
+	   :set-prompt  ; Set the string used by the interpreter as a prompt
+	   :set-default-executable))  ; Change default used by (start)
 
 (in-package :cl-moccasin)
 
-(defparameter *python-executable* #P"C:/DWR/Main/pob/Scripts/python.exe")	      
+;;; Set *default-executable* to the full path of the default program
+;;; to be run with (cl-moc:start) [start may also be called with the
+;;; :path keyword, specifying an override to this default].  Set
+;;; *arguments* to be a list of strings to append to the program call
+;;; that will ensure that it launches in interactive mode using
+;;; standard console I/O streams.
 
-(defparameter *python-stream* nil)
-(defparameter *python-process* nil)
-(defparameter *python-buffer* nil)
-(defparameter *python-streams* (make-hash-table :test 'equal))
-(defparameter *python-processes* (make-hash-table :test 'equal))
-(defparameter *python-buffers* (make-hash-table :test 'equal))
+(defparameter *default-executable* #P"C:/DWR/Main/pob/Scripts/python.exe")
+(defparameter *arguments* '("-i"))  ; Start executable in interpreter mode
+(defparameter *prompt* ">>> ")      ; Trimmed from output; REQUIRED
+(defparameter *prompts* (make-hash-table :test 'equal))
+
+(defparameter *stream* nil)
+(defparameter *process* nil)
+(defparameter *buffer* nil)
+(defparameter *streams* (make-hash-table :test 'equal))
+(defparameter *processes* (make-hash-table :test 'equal))
+(defparameter *buffers* (make-hash-table :test 'equal))
 
 
-(defun set-python-executable (path)
-  "Assign a new value to the *python-executable* parameter."
-  (setf *python-executable* path))
+(defun set-default-executable (path)
+  "Assign a new value to the *default-executable* parameter."
+  (setf *default-executable* path))
+
+
+(defun set-prompt (prompt &optional (identifier nil))
+  "Assign a new PROMPT specification for specified process."
+  (if (null identifier)
+      (setf *prompt* prompt)
+      (setf (gethash identifier *prompts*) prompt)))
 
 
 ;; Thanks to |3b| from #lisp on irc.freenode.net:
@@ -62,14 +147,16 @@
   (string-right-trim (format nil "~C" #\return) string))
 
 
-(defun trim-python-prompt (string)
-  "Return a copy of the given string, sans preceding '>>> ' if present."
-  (if (and (> (length string) 3)
-	     (string-equal ">>> " (subseq string 0 4)))
-      (subseq string 4 (length string))
-      string))
-
-
+(defun trim-prompt (string &optional (prompt *prompt*))
+  "Return a copy of the given string, sans preceding prompt when present."
+  (let ((slen (length string))
+	(plen (length prompt)))
+    (if (and (> slen (- plen 1))
+	     (string-equal prompt (subseq string 0 plen)))
+	(subseq string plen slen)
+	string)))
+  
+  
 (defun read-line-no-hang (stream)
   "Read any buffered line from the stream without blocking."
   (let ((acc (make-array 0
@@ -103,71 +190,78 @@
   (write-line string stream)
   (finish-output stream))
 
-(defun py-start (&key
-		   (identifier (gensym "py-iostream-"))
-		   (path *python-executable*))
-  "Instantiate two-way stream for a Python process and keep local reference."
-  (declare (sb-ext:unmuffle-conditions style-warning))
-  (multiple-value-bind (py-stream py-process) (program-stream path '("-i"))
+
+(defun start (&key
+		(identifier (gensym "cl-moc-iostream-"))
+		(path *default-executable*)
+		(args *arguments*)
+		(prompt *prompt*))
+  "Instantiate two-way stream for interpreter process and keep reference."
+  (when (not (null identifier))
+    (setf (gethash identifier *prompts*) prompt))
+  (multiple-value-bind (stream process) (program-stream path args)
     (if (null identifier)
 	(progn
-	  (setf *python-stream* py-stream)
-	  (setf *python-process* py-process))
+	  (setf *stream* stream)
+	  (setf *process* process))
 	(progn
-	  (setf (gethash identifier *python-streams*) py-stream)
-	  (setf (gethash identifier *python-processes*) py-process))))
+	  (setf (gethash identifier *streams*) stream)
+	  (setf (gethash identifier *processes*) process))))
   identifier)
 
 
-(defun py-send (string &optional (identifier nil))
-  "Send the given string to python stream, then finish-output."
+(defun send (string &optional (identifier nil))
+  "Send the given string to stream, then finish-output."
   (write-finished-line string
 		       (if (null identifier)
-			   *python-stream*
-			   (gethash identifier *python-streams*))))
+			   *stream*
+			   (gethash identifier *streams*))))
 
 
-(defun py-lines (&optional (identifier nil))
-  "Retrieve current lines of output buffer from python stream."
+(defun lines (&optional (identifier nil))
+  "Retrieve current lines of output buffer from stream."
   (let ((previous-remains (if (null identifier)
-			      *python-buffer*
-			      (gethash identifier *python-buffers*))))
+			      *buffer*
+			      (gethash identifier *buffers*)))
+	(prompt (if (null identifier)
+		    *prompt*
+		    (gethash identifier *prompts*))))
     (multiple-value-bind (lines remains)
 	(read-lines-no-hang (if (null identifier)
-				*python-stream*
-				(gethash identifier *python-streams*)))
+				*stream*
+				(gethash identifier *streams*)))
       (if (> (length lines) 0)
 	  (progn
 	    (if (null identifier)
-		(setf *python-buffer* nil)
-		(setf (gethash identifier *python-buffers*) nil))
+		(setf *buffer* nil)
+		(setf (gethash identifier *buffers*) nil))
 	    (if (not (null previous-remains))
 		(setf lines (cons (concatenate 'string
 					       previous-remains
 					       (car lines))
 				  (cdr lines)))))
 	  (setf remains (concatenate 'string previous-remains remains)))
-      (setf remains (trim-python-prompt remains))
+      (setf remains (trim-prompt remains prompt))
       (when (equal (length remains) 0) (setf remains nil))
       (if (null identifier)
-	  (setf *python-buffer* remains)
-	  (setf (gethash identifier *python-buffers*) remains))
-      (mapcar #'trim-python-prompt lines))))
+	  (setf *buffer* remains)
+	  (setf (gethash identifier *buffers*) remains))
+      (mapcar #'(lambda (x) (trim-prompt x prompt)) lines))))
 
 
-(defun py-recv (&optional (identifier nil))
-  "Print lines of buffered output from python stream"
-  (print-strings (py-lines identifier)))
+(defun recv (&optional (identifier nil))
+  "Print lines of buffered output from stream"
+  (print-strings (lines identifier)))
 
 
-(defun py-wait (&optional (identifier nil))
-  "Read/print lines from python stream, blocking until control is restored."
-  (let ((lines (py-lines identifier))
+(defun wait (&optional (identifier nil))
+  "Read/print lines from stream, blocking until control is restored."
+  (let ((lines (lines identifier))
 	(finished nil))
-    (py-send "()" identifier)
+    (send "()" identifier)
     (do ((i 0 (+ 1 i)))
 	(finished (print-strings lines))
-      (let ((newlines (py-lines identifier)))
+      (let ((newlines (lines identifier)))
 	(when (not (null newlines))
 	  (when (string-equal (elt newlines (- (length newlines) 1)) "()")
 	    (setf newlines (subseq newlines 0 (- (length newlines) 1)))
@@ -177,31 +271,31 @@
 	    (setf lines newlines)))))))  
 
 
-(defun py-pid (&optional (identifier nil))
-  "Get the Windows PID for the running python process."
+(defun pid (&optional (identifier nil))
+  "Get the Windows PID for the running process."
   (get-process-id (sb-ext:process-pid
 		   (if (null identifier)
-		       *python-process*
-		       (gethash identifier *python-processes*)))))
+		       *process*
+		       (gethash identifier *processes*)))))
 
 
-(defun py-peek (&optional (identifier nil))
+(defun peek (&optional (identifier nil))
   "Peek at the contents of last-seen unterminated line in buffer (if any)."
-  (let ((py-buffer (if (null identifier)
-		       *python-buffer*
-		       (gethash identifier *python-buffers*))))
-    (when (not (null py-buffer))
-      (format t "~A" py-buffer))))
+  (let ((buffer (if (null identifier)
+		       *buffer*
+		       (gethash identifier *buffers*))))
+    (when (not (null buffer))
+      (format t "~A" buffer))))
 
 
-(defun py-kill (&optional (identifier nil))
-  "Forcibly kill the running python process."
+(defun kill (&optional (identifier nil))
+  "Forcibly kill the running process."
   (sb-ext:run-program "cmd"
 		      (list (format nil "/C taskkill /f /pid ~A"
-				    (py-pid identifier))) :search t)
-  (let ((py-process (if (null identifier)
-			*python-process*
-			(gethash identifier *python-processes*))))
-    (sb-ext:process-wait py-process)
-    (sb-ext:process-close py-process)
-    (sb-ext:process-exit-code py-process)))
+				    (pid identifier))) :search t)
+  (let ((process (if (null identifier)
+			*process*
+			(gethash identifier *processes*))))
+    (sb-ext:process-wait process)
+    (sb-ext:process-close process)
+    (sb-ext:process-exit-code process)))
