@@ -11,34 +11,6 @@
 ;;; way to interact with interpreters for other high-level languages
 ;;; like Python.
 
-;;; Currently this has only been tested with Python 2.7
-
-;;; Example:
-
-;;; CL-MOC> (start :identifier nil)      ; Launch default instance.
-;;; ; <OR>
-;;; CL-MOC> (defparameter *p1* (start))  ; Launch unique instance as *p1*.
-;;; NIL
-;;; CL-MOC> (wait)  ; Use (wait *p1*) to target *p1* instead of default.
-;;; Python 2.7.10 (default, ...   ; [abbreviated for example]
-;;; Type "help", "copyright", ... ; " " "
-;;; NIL
-;;; CL-MOC> (send "from my_module import MyClass")  ; [ ... *p1*)]
-;;; NIL
-;;; CL-MOC> (wait)
-;;; NIL  ; this implies success, otherwise we would see an error or be blocked.
-;;; CL-MOC> (send "MyClass().do_something()")  ; [ ... *p1*)]
-;;; NIL
-;;; CL-MOC> (recv)  ; [ ... *p1*)]
-;;; ; <<Finished lines of output from Python>>
-;;; CL-MOC> (peek)  ; [ ... *p1*)]
-;;; ; <<If there was an incomplete line during (recv), it is displayed here>>
-;;; CL-MOC> (wait)  ; [ ... *p1*)]
-;;; ; <<Blocks until line(s) terminated in Python and printed to REPL>>
-;;; NIL
-;;; CL-MOC> (kill)  ; [ ... *p1*)]
-;;; NIL  ; Process was successfully terminated.
-
 (defpackage :cl-moccasin
   (:use :common-lisp)
   (:nicknames :cl-moc)
@@ -56,14 +28,16 @@
 ;;; Set *default-executable* to the full path of the default program
 ;;; to be run with (cl-moc:start) [start may also be called with the
 ;;; :path keyword, specifying an override to this default].  Set
-;;; *default-arguments* to be a list of strings to append to the program call
-;;; that will ensure that it launches in interactive mode using
-;;; standard console I/O streams.
+;;; *default-arguments* to be a list of strings to append to the
+;;; program call that will ensure that it launches in interactive mode
+;;; using standard console I/O streams.  Specifying *prompt* and
+;;; *test-string* is required for proper inference of
+;;; return-of-control when using (cl-moc:wait).
 
 (defparameter *default-executable* #P"python.exe")
 (defparameter *default-arguments* '("-i"))  ; Start in interactive mode
-(defparameter *prompt* ">>> ")              ; Trimmed from output; REQUIRED
-(defparameter *test-string* "()")
+(defparameter *prompt* ">>> ")              ; Trimmed from output lines
+(defparameter *test-string* "()")           ; String that evaluates to itself
 (defparameter *stream* nil)
 (defparameter *process* nil)
 (defparameter *buffer* nil)
