@@ -9,7 +9,7 @@ like Python.
 Currently this has only been tested with Python 2.7
 
 Example:
-
+```
 CL-MOC> (start :identifier nil)      ; Launch default instance.
 ; <OR>
 CL-MOC> (defparameter *p1* (start))  ; Launch unique instance as *p1*.
@@ -33,3 +33,4 @@ CL-MOC> (wait)  ; [ ... *p1*)]
 NIL
 CL-MOC> (kill)  ; [ ... *p1*)]
 NIL  ; Process was successfully terminated.
+```
