@@ -21,7 +21,9 @@
 	   :wait   ; Read lines from process output until control returns
 	   :kill   ; Forcibly terminate the process
 	   :set-prompt  ; Set the string used by the interpreter as a prompt
-	   :set-default-executable))  ; Change default used by (start)
+	   :set-test-string  ; Set self-evaluating string used for control test
+	   :set-default-executable   ; Change default used by (start)
+	   :set-default-arguments))  ; Change default used by (start)
 
 (in-package :cl-moccasin)
 
@@ -51,6 +53,11 @@
 (defun set-default-executable (path)
   "Assign a new value to the *default-executable* parameter."
   (setf *default-executable* path))
+
+
+(defun set-default-arguments (args)
+  "Assign a new value to the *default-arguments* parameter."
+  (setf *default-arguments* args))
 
 
 (defun set-prompt (prompt &optional (identifier nil))
