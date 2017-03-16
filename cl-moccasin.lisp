@@ -1,5 +1,4 @@
 ;;;; cl-moccasin.lisp
-
 ;;;; by <dwringer@gmail.com>
 
 (in-package :common-lisp-user)
