@@ -79,6 +79,7 @@
   (handle sb-win32:handle))
 
 
+;; Thanks to danlei from stackoverflow.com/questions/15988870/:
 (defun program-stream (program &optional args)
   "Create a two-way stream for a new instance of program [w/arguments]."
   (let ((process (sb-ext:run-program program args
@@ -293,6 +294,7 @@
 
 (defun python-monitor-interrupts (&optional (identifier nil))
   "Prepare and start a python monitor thread for KeyboardInterrupt requests"
+  (wait identifier)
   (python-send-function (format nil "
 def watch_for_keyboard_interrupt():
     from os import remove
