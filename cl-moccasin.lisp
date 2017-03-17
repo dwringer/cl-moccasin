@@ -101,7 +101,7 @@
       (dotimes (i (- (length string-list) 1))
 	(setf acc (concatenate 'string acc separator
 			       (elt string-list (+ 1 i)))))
-      (format t acc))))
+      (format t "~A~%" acc))))
 
 
 (defun trim-eol (string)
@@ -270,3 +270,59 @@
     (sb-ext:process-wait process)
     (sb-ext:process-close process)
     (sb-ext:process-exit-code process)))
+
+
+;;; PYTHON-SPECIFIC FUNCTIONS:
+
+(defun python-send-function (string &optional (identifier nil))
+  "Push a function definition to the Python interpreter and await control."
+  (send (format nil "~A~%" string) identifier)
+  (let ((stream (if (null identifier)
+		    *stream*
+		    (gethash identifier *streams*))))
+    (do ((done nil))
+	((not (null done)) nil)
+      (sleep .02)
+      (setf done (listen stream))))
+  (recv identifier)
+  (if (null identifier)
+      (setf *buffer* nil)
+      (setf (gethash identifier *buffers*) nil))
+  (wait identifier))
+
+
+(defun python-monitor-interrupts (&optional (identifier nil))
+  "Prepare and start a python monitor thread for KeyboardInterrupt requests"
+  (python-send-function (format nil "
+def watch_for_keyboard_interrupt():
+    from os import remove
+    from six.moves._thread import interrupt_main
+    from time import sleep
+    filename = '~A_access.lock'
+    while True:
+        try:
+            _interrupt = False
+            with open(filename, 'rb') as inf:
+                if len(inf.readlines()) > 0:
+                    _interrupt = True
+            if _interrupt:
+                interrupt_main()
+                with open(filename, 'wb') as outf:
+                    _nil = outf
+                remove(filename)
+        except Exception:
+            pass
+        sleep(0.5)" (string identifier)) identifier)
+  (send "from six.moves._thread import start_new_thread" identifier)
+  (wait identifier)
+  (send "_CL_INTERRUPT = start_new_thread(watch_for_keyboard_interrupt, ())"
+	identifier)
+  (wait identifier))
+
+
+(defun python-interrupt (&optional (identifier nil))
+  "Signal python monitor thread to raise KeyboardInterrupt, via *_access.lock"
+  (let ((filename (format nil "~A_access.lock" (string identifier))))
+    (with-open-file (outf filename :direction :output :if-exists :supersede)
+      (format outf "X"))))
+  
