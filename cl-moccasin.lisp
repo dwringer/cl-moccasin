@@ -22,8 +22,11 @@
 	   :kill   ; Forcibly terminate the process
 	   :set-prompt  ; Set the string used by the interpreter as a prompt
 	   :set-test-string  ; Set self-evaluating string used for control test
-	   :set-default-executable   ; Change default used by (start)
-	   :set-default-arguments))  ; Change default used by (start)
+	   :set-default-executable  ; Change default used by (start)
+	   :set-default-arguments   ; Change default used by (start)
+	   :python-send-function    ; Coordinate sending function def to Python
+	   :python-monitor-interrupts  ; Start Python interrupt monitor thread
+	   :python-interrupt))  ; Signal monitor to raise KeyboardInterrupt
 
 (in-package :cl-moccasin)
 
