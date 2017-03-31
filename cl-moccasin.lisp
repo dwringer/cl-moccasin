@@ -17,16 +17,20 @@
   (:export :start  ; Launch a new subordinate process
 	   :send   ; Send to the process input stream
 	   :recv   ; Receive complete lines from process output stream
+	   :ping   ; Check process for interpreter control (w/timeout)
+	   :pong   ; A response symbol from ping (not defined)
 	   :peek   ; Preview incomplete line from process output stream
 	   :wait   ; Read lines from process output until control returns
 	   :kill   ; Forcibly terminate the process
+	   :psw    ; (progn (send ... ) (wait ...))
 	   :set-prompt  ; Set the string used by the interpreter as a prompt
 	   :set-test-string  ; Set self-evaluating string used for control test
 	   :set-default-executable  ; Change default used by (start)
 	   :set-default-arguments   ; Change default used by (start)
 	   :python-send-function    ; Coordinate sending function def to Python
 	   :python-monitor-interrupts  ; Start Python interrupt monitor thread
-	   :python-interrupt))  ; Signal monitor to raise KeyboardInterrupt
+	   :python-interrupt  ; Signal monitor to raise KeyboardInterrupt
+	   :python-import))   ; Import name from module
 
 (in-package :cl-moccasin)
 
@@ -46,11 +50,13 @@
 (defparameter *stream* nil)
 (defparameter *process* nil)
 (defparameter *buffer* nil)
+(defparameter *active-ping* nil)
 (defparameter *prompts* (make-hash-table :test 'equal))
 (defparameter *test-strings* (make-hash-table :test 'equal))
 (defparameter *streams* (make-hash-table :test 'equal))
 (defparameter *processes* (make-hash-table :test 'equal))
 (defparameter *buffers* (make-hash-table :test 'equal))
+(defparameter *active-pings* (make-hash-table :test 'equal))
 
 
 (defun set-default-executable (path)
@@ -226,6 +232,43 @@
   (print-strings (lines identifier)))
 
 
+(defun ping (&optional (identifier nil) (persist-for 2))
+  "Check for a response from the interpreter stream"
+  (let ((test (if (null identifier)
+		  *test-string*
+		  (gethash identifier *test-strings*)))
+	(ping (if (null identifier)
+		  *active-ping*
+		  (gethash identifier *active-pings*))))
+    (when (null ping)
+      (send test identifier)
+      (if (null identifier)
+	  (setf *active-ping* t)
+	  (setf (gethash identifier *active-pings*) t)))
+    (let ((tau (get-internal-real-time))
+	  (delta (* persist-for internal-time-units-per-second)))
+      (do ((return nil)
+	   (theta 0))
+	  ((or (>= theta (+ tau delta)) (not (null return))) return)
+	(setf theta (get-internal-real-time))
+	(let* ((lines (lines identifier))
+	       (length (length lines))
+	       (prompt (if (null identifier)
+			   *prompt*
+			   (gethash identifier *prompts*))))
+	  (when (> length 0)
+	    (when (or (string-equal test (elt lines (- length 1)))
+		      (string-equal test
+				    (trim-prompt (elt lines (- length 1))
+						 prompt)))
+	      (setf lines (subseq lines 0 (- length 1)))
+	      (setf return 'pong)
+	      (if (null identifier)
+		  (setf *active-ping* nil)
+		  (setf (gethash identifier *active-pings*) nil)))
+	    (print-strings lines)))))))
+
+
 (defun wait (&optional (identifier nil))
   "Read/print lines from stream, blocking until control is restored."
   (let ((lines (lines identifier))
@@ -273,7 +316,15 @@
 			(gethash identifier *processes*))))
     (sb-ext:process-wait process)
     (sb-ext:process-close process)
-    (sb-ext:process-exit-code process)))
+    (sb-ext:process-exit-code process)
+    (if (null identifier)
+	(setf *stream* nil)
+	(setf (gethash identifier *streams*) nil))))
+
+
+(defun psw (string &optional (identifier nil))
+  (send string identifier)
+  (wait identifier))
 
 
 ;;; PYTHON-SPECIFIC FUNCTIONS:
@@ -301,8 +352,12 @@
   (python-send-function (format nil "
 def watch_for_keyboard_interrupt():
     from os import remove
-    from six.moves._thread import interrupt_main
+    from sys import version_info
     from time import sleep
+    if version_info.major >= 3:
+        from _thread import interrupt_main
+    else:
+        from thread import interrupt_main
     filename = '~A_access.lock'
     while True:
         try:
@@ -329,5 +384,11 @@ def watch_for_keyboard_interrupt():
   "Signal python monitor thread to raise KeyboardInterrupt, via *_access.lock"
   (let ((filename (format nil "~A_access.lock" (string identifier))))
     (with-open-file (outf filename :direction :output :if-exists :supersede)
-      (format outf "X"))))
-  
+      (format outf "X")))
+  (if (null identifier)
+      (setf *active-ping* nil)
+      (setf (gethash identifier *active-pings*) nil)))
+
+
+(defun python-import (from what &optional (identifier nil))
+  (psw (format nil "from ~A import ~A" from what) identifier))
