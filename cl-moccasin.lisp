@@ -12,7 +12,7 @@
 ;;; like Python.
 
 (defpackage :cl-moccasin
-  (:use :common-lisp)
+  (:use :common-lisp :sb-ext)
   (:nicknames :cl-moc)
   (:export :start  ; Launch a new subordinate process
 	   :send   ; Send to the process input stream
@@ -29,8 +29,11 @@
 	   :set-default-arguments   ; Change default used by (start)
 	   :python-send-function    ; Coordinate sending function def to Python
 	   :python-monitor-interrupts  ; Start Python interrupt monitor thread
-	   :python-interrupt  ; Signal monitor to raise KeyboardInterrupt
-	   :python-import))   ; Import name from module
+	   :python-interrupt        ; Signal monitor to raise KeyboardInterrupt
+	   :python-import           ; Import name from module
+	   :create-python-timer     ; Timer functions creation macro
+	   :init-python-timers))    ; Batch timer blocking initializer
+
 
 (in-package :cl-moccasin)
 
@@ -327,6 +330,26 @@
   (wait identifier))
 
 
+;;; TIMER FUNCTIONS:
+
+(defun start-cycle (timer repeat-interval
+		    &key
+		      (delay-seconds 10)
+		      (start-time (get-universal-time)))
+  (schedule-timer timer
+		  (+ start-time delay-seconds)
+		  :repeat-interval repeat-interval
+		  :absolute-p t))
+
+
+(defun run-step (id code name)
+  (if (equal (ping id) 'pong)
+      (progn
+	(send code id)
+	(format t "<RUNNING ~A>~%" name))
+      (format t "<WAITING ~A>~%" name)))
+
+
 ;;; PYTHON-SPECIFIC FUNCTIONS:
 
 (defun python-send-function (string &optional (identifier nil))
@@ -392,3 +415,94 @@ def watch_for_keyboard_interrupt():
 
 (defun python-import (from what &optional (identifier nil))
   (psw (format nil "from ~A import ~A" from what) identifier))
+
+
+;;; PYTHON TIMER FUNCTIONS:
+
+(defparameter *python-timers* nil)
+(defparameter *python-initialization* (make-hash-table :test #'equal))
+
+
+(defun timer-init-p (name) (gethash name *python-initialization*))
+    
+
+(defmacro create-python-timer (name init-fn step-expr)
+  (let ((instance-name
+	 (intern (string-upcase (format nil "*~A-python*" name))))
+	(timer-name (intern (string-upcase (format nil "*~A-timer*" name))))
+	(init-fn-name (intern (string-upcase (format nil "init-~A" name))))
+	(run-fn-name (intern (string-upcase (format nil "run-~A" name))))
+	(schedule-fn-name
+	 (intern (string-upcase (format nil "schedule-~A" name))))
+	(cancel-fn-name
+	 (intern (string-upcase (format nil "cancel-~A" name)))))
+    `(progn
+       (push ,name *python-timers*)
+       (setf (gethash ,name *python-initialization*) nil)
+       (defparameter ,instance-name nil)  ; (start))
+       (defun ,init-fn-name (&optional (id ,instance-name))
+	 (if (null id)
+	     (progn
+	       (setf ,instance-name (start))
+	       (ping ,instance-name)
+	       (wait ,instance-name)
+	       (funcall ,init-fn ,instance-name)
+	       (spawn-python-timer ,name))
+	     (funcall ,init-fn id))
+	 (setf (gethash ,name *python-initialization*) t))
+       (defun ,run-fn-name (&optional (id ,instance-name))
+	 (cl-moc::run-step id ,step-expr ,name))
+       (defparameter ,timer-name nil)
+       (defun ,schedule-fn-name (repeat-interval)
+	 (schedule-python-name ,name repeat-interval :delay-seconds 5))
+       (defun ,cancel-fn-name () (cancel-python-timer ,name)))))
+
+
+(defun spawn-python-timer (name)
+  (eval (read-from-string
+	 (format nil "(setf *~A-timer* ~A)"
+		 name
+		 (format nil "(make-timer #'(lambda () (run-~A *~A-python*)))"
+			 name name)))))
+
+
+(defun cancel-python-timer (name)
+  (setf (gethash name *python-initialization*) nil)
+  (eval (read-from-string (format nil "(unschedule-timer *~A-timer*)" name)))
+  (eval (read-from-string (format nil "(kill *~A-python*)" name)))
+  (eval (read-from-string (format nil "(setf *~A-python* nil)" name)))
+  (eval (read-from-string (format nil "(setf *~A-timer* nil)" name))))
+
+
+(defun ping-python-name (n &optional (persist-for 2))
+  (eval (read-from-string (format nil "(ping *~A-python* ~A)" n persist-for))))
+
+
+(defun init-python-timers (&optional (names nil))  ; *python-timers*))
+  (when (null names)
+    (setf names (remove-if #'timer-init-p *python-timers*)))
+  (let ((init-functions nil))
+    (map nil #'(lambda (n)
+		 (push (intern (string-upcase (format nil "init-~A" n)))
+		       init-functions))
+	 names)
+    (map nil #'(lambda (f) (funcall f)) init-functions)
+    (do ((fin nil))
+    	(fin nil)
+      (let ((acc 0)
+    	    (pings (mapcar #'ping-python-name names)))
+    	(do ((i 0 (+ i 1)))
+    	    ((= i (length pings)) nil)
+    	  (when (equal 'pong (elt pings i))
+    	    (incf acc)))
+    	(when (= acc (length pings))
+    	  (setf fin t))))))
+
+
+(defun schedule-python-name (n repeat-interval &key (delay-seconds 10))
+  (when (not (timer-init-p n))
+    (init-python-timers (list n)))
+  (eval (read-from-string (format nil "(wait *~A-python*)" n)))
+  (eval (read-from-string
+	 (format nil "(cl-moc::start-cycle *~A-timer* ~A :delay-seconds ~A)"
+		 n repeat-interval delay-seconds))))
