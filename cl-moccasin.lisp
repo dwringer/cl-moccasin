@@ -62,28 +62,86 @@
 (defparameter *active-pings* (make-hash-table :test 'equal))
 
 
+(defun get-active-ping (id)
+  "Retrieve appropriate value of ACTIVE-PING for identified process stream."
+  (if (null id)
+      *active-ping*
+      (gethash id *active-pings*)))
+
+(defun get-buffer (id)
+  "Retrieve appropriate value of BUFFER for identified process stream."
+  (if (null id)
+      *buffer*
+      (gethash id *buffers*)))
+
+(defun get-process (id)
+  "Retrieve appropriate value of PROCESS for identified process stream."
+  (if (null id)
+      *process*
+      (gethash id *processes*)))
+
+(defun get-prompt (id)
+  "Retrieve appropriate value of PROMPT for identified process stream."
+  (if (null id)
+      *prompt*
+      (gethash id *prompts*)))
+
+(defun get-stream (id)
+  "Retrieve appropriate value of STREAM for identified process stream."
+  (if (null id)
+      *stream*
+      (gethash id *streams*)))
+
+(defun get-test-string (id)
+  "Retrieve appropriate value of TEST-STRING for identified process stream."
+  (if (null id)
+      *test-string*
+      (gethash id *test-strings*)))
+
+
+(defun set-active-ping (id value)
+  "Assign a new ACTIVE-PING specification for specified process."
+  (if (null id)
+      (setf *active-ping* value)
+      (setf (gethash id *active-pings*) value)))
+
+(defun set-buffer (id value)
+  "Assign a new BUFFER specification for specified process."
+  (if (null id)
+      (setf *buffer* value)
+      (setf (gethash id *buffers*) value)))
+
+(defun set-process (id value)
+  "Assign a new PROCESS specification for specified process."
+  (if (null id)
+      (setf *process* value)
+      (setf (gethash id *processes*) value)))
+
+(defun set-prompt (id prompt)
+  "Assign a new PROMPT specification for specified process."
+  (if (null id)
+      (setf *prompt* prompt)
+      (setf (gethash id *prompts*) prompt)))
+
+(defun set-stream (id value)
+  "Assign a new STREAM specification for specified process."
+  (if (null id)
+      (setf *stream* value)
+      (setf (gethash id *streams*) value)))
+
+(defun set-test-string (id test)
+  "Assign a new TEST-STRING specification for specified process."
+  (if (null id)
+      (setf *test-string* test)
+      (setf (gethash id *test-strings*) test)))
+
 (defun set-default-executable (path)
   "Assign a new value to the *default-executable* parameter."
   (setf *default-executable* path))
 
-
 (defun set-default-arguments (args)
   "Assign a new value to the *default-arguments* parameter."
   (setf *default-arguments* args))
-
-
-(defun set-prompt (prompt &optional (identifier nil))
-  "Assign a new PROMPT specification for specified process."
-  (if (null identifier)
-      (setf *prompt* prompt)
-      (setf (gethash identifier *prompts*) prompt)))
-
-
-(defun set-test-string (test &optional (identifier nil))
-  "Assign a new TEST-STRING specification for specified process."
-  (if (null identifier)
-      (setf *test-string* test)
-      (setf (gethash identifier *test-strings*) test)))
 
 
 ;; Thanks to |3b| from #lisp on irc.freenode.net:
@@ -173,49 +231,28 @@
 		(prompt *prompt*)
 		(test *test-string*))
   "Instantiate two-way stream for interpreter process and keep reference."
-  (if (null identifier)
-      (progn
-	(setf *prompt* prompt)
-	(setf *test-string* test))
-      (progn
-	(setf (gethash identifier *prompts*) prompt)
-	(setf (gethash identifier *test-strings*) test)))
+  (set-prompt identifier prompt)
+  (set-test-string identifier test)
   (multiple-value-bind (stream process) (program-stream path args)
-    (if (null identifier)
-	(progn
-	  (setf *stream* stream)
-	  (setf *process* process))
-	(progn
-	  (setf (gethash identifier *streams*) stream)
-	  (setf (gethash identifier *processes*) process))))
+    (set-stream identifier stream)
+    (set-process identifier process))
   identifier)
 
 
 (defun send (string &optional (identifier nil))
   "Send the given string to stream, then finish-output."
-  (write-finished-line string
-		       (if (null identifier)
-			   *stream*
-			   (gethash identifier *streams*))))
+  (write-finished-line string (get-stream identifier)))
 
 
 (defun lines (&optional (identifier nil))
   "Retrieve current lines of output buffer from stream."
-  (let ((previous-remains (if (null identifier)
-			      *buffer*
-			      (gethash identifier *buffers*)))
-	(prompt (if (null identifier)
-		    *prompt*
-		    (gethash identifier *prompts*))))
+  (let ((previous-remains (get-buffer identifier))
+	(prompt (get-prompt identifier)))
     (multiple-value-bind (lines remains)
-	(read-lines-no-hang (if (null identifier)
-				*stream*
-				(gethash identifier *streams*)))
+	(read-lines-no-hang (get-stream identifier))
       (if (> (length lines) 0)
 	  (progn
-	    (if (null identifier)
-		(setf *buffer* nil)
-		(setf (gethash identifier *buffers*) nil))
+	    (set-buffer identifier nil)
 	    (if (not (null previous-remains))
 		(setf lines (cons (concatenate 'string
 					       previous-remains
@@ -224,30 +261,35 @@
 	  (setf remains (concatenate 'string previous-remains remains)))
       (setf remains (trim-prompt remains prompt))
       (when (equal (length remains) 0) (setf remains nil))
-      (if (null identifier)
-	  (setf *buffer* remains)
-	  (setf (gethash identifier *buffers*) remains))
+      (set-buffer identifier remains)
       (mapcar #'(lambda (x) (trim-prompt x prompt)) lines))))
 
 
 (defun recv (&optional (identifier nil))
   "Print lines of buffered output from stream"
-  (print-strings (lines identifier)))
+  (let* ((lines (lines identifier))
+	 (length (length lines))
+	 (test (get-test-string identifier))
+	 (prompt (get-prompt identifier)))
+    (when (and (get-active-ping identifier)
+	       (> length 0)
+	       (or (string-equal test (elt lines (- length 1)))
+		   (string-equal test
+				 (trim-prompt (elt lines (- length 1))
+					      prompt))))
+      (setf lines (subseq lines 0 (- length 1)))
+      (set-active-ping identifier nil))
+    (print-strings lines)))
 
 
-(defun ping (&optional (identifier nil) (persist-for 2))
+(defun ping (&optional (identifier nil) (persist-for 2) (force-reset nil))
   "Check for a response from the interpreter stream"
-  (let ((test (if (null identifier)
-		  *test-string*
-		  (gethash identifier *test-strings*)))
-	(ping (if (null identifier)
-		  *active-ping*
-		  (gethash identifier *active-pings*))))
+  (when force-reset (set-active-ping identifier nil))
+  (let ((test (get-test-string identifier))
+	(ping (get-active-ping identifier)))
     (when (null ping)
       (send test identifier)
-      (if (null identifier)
-	  (setf *active-ping* t)
-	  (setf (gethash identifier *active-pings*) t)))
+      (set-active-ping identifier t))
     (let ((tau (get-internal-real-time))
 	  (delta (* persist-for internal-time-units-per-second)))
       (do ((return nil)
@@ -256,9 +298,7 @@
 	(setf theta (get-internal-real-time))
 	(let* ((lines (lines identifier))
 	       (length (length lines))
-	       (prompt (if (null identifier)
-			   *prompt*
-			   (gethash identifier *prompts*))))
+	       (prompt (get-prompt identifier)))
 	  (when (> length 0)
 	    (when (or (string-equal test (elt lines (- length 1)))
 		      (string-equal test
@@ -266,9 +306,7 @@
 						 prompt)))
 	      (setf lines (subseq lines 0 (- length 1)))
 	      (setf return 'pong)
-	      (if (null identifier)
-		  (setf *active-ping* nil)
-		  (setf (gethash identifier *active-pings*) nil)))
+	      (set-active-ping identifier nil))
 	    (print-strings lines)))))))
 
 
@@ -276,9 +314,7 @@
   "Read/print lines from stream, blocking until control is restored."
   (let ((lines (lines identifier))
 	(finished nil)
-	(test (if (null identifier)
-		  *test-string*
-		  (gethash identifier *test-strings*))))
+	(test (get-test-string identifier)))
     (send test identifier)
     (do ((i 0 (+ 1 i)))
 	(finished (print-strings lines))
@@ -294,17 +330,12 @@
 
 (defun pid (&optional (identifier nil))
   "Get the Windows PID for the running process."
-  (get-process-id (sb-ext:process-pid
-		   (if (null identifier)
-		       *process*
-		       (gethash identifier *processes*)))))
+  (get-process-id (sb-ext:process-pid (get-process identifier))))
 
 
 (defun peek (&optional (identifier nil))
   "Peek at the contents of last-seen unterminated line in buffer (if any)."
-  (let ((buffer (if (null identifier)
-		       *buffer*
-		       (gethash identifier *buffers*))))
+  (let ((buffer (get-buffer identifier)))
     (when (not (null buffer))
       (format t "~A" buffer))))
 
@@ -314,18 +345,15 @@
   (sb-ext:run-program "cmd"
 		      (list (format nil "/C taskkill /f /pid ~A"
 				    (pid identifier))) :search t)
-  (let ((process (if (null identifier)
-			*process*
-			(gethash identifier *processes*))))
+  (let ((process (get-process identifier)))
     (sb-ext:process-wait process)
     (sb-ext:process-close process)
     (sb-ext:process-exit-code process)
-    (if (null identifier)
-	(setf *stream* nil)
-	(setf (gethash identifier *streams*) nil))))
+    (set-stream identifier nil)))
 
 
 (defun psw (string &optional (identifier nil))
+  "Equivalent to (Progn (Send string identifier) (Wait identifier))"
   (send string identifier)
   (wait identifier))
 
@@ -355,17 +383,13 @@
 (defun python-send-function (string &optional (identifier nil))
   "Push a function definition to the Python interpreter and await control."
   (send (format nil "~A~%" string) identifier)
-  (let ((stream (if (null identifier)
-		    *stream*
-		    (gethash identifier *streams*))))
+  (let ((stream (get-stream identifier)))
     (do ((done nil))
 	((not (null done)) nil)
       (sleep .02)
       (setf done (listen stream))))
   (recv identifier)
-  (if (null identifier)
-      (setf *buffer* nil)
-      (setf (gethash identifier *buffers*) nil))
+  (set-buffer identifier nil)
   (wait identifier))
 
 
@@ -408,9 +432,7 @@ def watch_for_keyboard_interrupt():
   (let ((filename (format nil "~A_access.lock" (string identifier))))
     (with-open-file (outf filename :direction :output :if-exists :supersede)
       (format outf "X")))
-  (if (null identifier)
-      (setf *active-ping* nil)
-      (setf (gethash identifier *active-pings*) nil)))
+  (set-active-ping identifier nil))
 
 
 (defun python-import (from what &optional (identifier nil))
