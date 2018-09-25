@@ -145,8 +145,8 @@
 
 
 ;; Thanks to |3b| from #lisp on irc.freenode.net:
-(sb-alien:define-alien-routine ("GetProcessId" get-process-id) sb-win32:dword
-  (handle sb-win32:handle))
+;;(sb-alien:define-alien-routine ("GetProcessId" get-process-id) sb-win32:dword
+;;  (handle sb-win32:handle))
 
 
 ;; Thanks to danlei from stackoverflow.com/questions/15988870/:
@@ -265,7 +265,7 @@
       (mapcar #'(lambda (x) (trim-prompt x prompt)) lines))))
 
 
-(defun recv (&optional (identifier nil))
+(defun recv (&optional (identifier nil) return-lines)
   "Print lines of buffered output from stream"
   (let* ((lines (lines identifier))
 	 (length (length lines))
@@ -279,7 +279,9 @@
 					      prompt))))
       (setf lines (subseq lines 0 (- length 1)))
       (set-active-ping identifier nil))
-    (print-strings lines)))
+    (print-strings lines)
+    (when return-lines (setf return-lines lines)))
+  return-lines)
 
 
 (defun ping (&optional (identifier nil) (persist-for 2) (force-reset nil))
@@ -310,27 +312,32 @@
 	    (print-strings lines)))))))
 
 
-(defun wait (&optional (identifier nil))
+(defun wait (&optional (identifier nil) (return-lines nil))
   "Read/print lines from stream, blocking until control is restored."
-  (let ((lines (lines identifier))
+  (let ((results nil)
+	(lines (lines identifier))
 	(finished nil)
 	(test (get-test-string identifier)))
     (send test identifier)
     (do ((i 0 (+ 1 i)))
-	(finished (print-strings lines))
+	(finished (progn
+		    (when return-lines (setf results (append results lines)))
+		    (print-strings lines)
+		    (when return-lines results)))
       (let ((newlines (lines identifier)))
 	(when (not (null newlines))
 	  (when (string-equal (elt newlines (- (length newlines) 1)) test)
 	    (setf newlines (subseq newlines 0 (- (length newlines) 1)))
 	    (setf finished t))
 	  (when (> (length newlines) 0)
+	    (when return-lines (setf results (append results lines)))
 	    (print-strings lines)
 	    (setf lines newlines)))))))  
 
 
-(defun pid (&optional (identifier nil))
-  "Get the Windows PID for the running process."
-  (get-process-id (sb-ext:process-pid (get-process identifier))))
+;;(defun pid (&optional (identifier nil))
+;;  "Get the Windows PID for the running process."
+;;  (get-process-id (sb-ext:process-pid (get-process identifier))))
 
 
 (defun peek (&optional (identifier nil))
@@ -340,12 +347,23 @@
       (format t "~A" buffer))))
 
 
+;; (defun kill (&optional (identifier nil))
+;;   "Forcibly kill the running process."
+;;   (sb-ext:run-program "cmd"
+;; 		      (list (format nil "/C taskkill /f /pid ~A"
+;; 				    (pid identifier))) :search t)
+;;   (let ((process (get-process identifier)))
+;;     (sb-ext:process-wait process)
+;;     (sb-ext:process-close process)
+;;     (sb-ext:process-exit-code process)
+;;     (set-stream identifier nil)))
+
 (defun kill (&optional (identifier nil))
   "Forcibly kill the running process."
-  (sb-ext:run-program "cmd"
-		      (list (format nil "/C taskkill /f /pid ~A"
-				    (pid identifier))) :search t)
   (let ((process (get-process identifier)))
+    (sb-ext:run-program "cmd"
+			(list (format nil "/C taskkill /f /pid ~A"
+				      (sb-ext:process-pid process))) :search t)
     (sb-ext:process-wait process)
     (sb-ext:process-close process)
     (sb-ext:process-exit-code process)
@@ -374,8 +392,39 @@
   (if (equal (ping id) 'pong)
       (progn
 	(send code id)
-	(format t "<RUNNING ~A>~%" name))
-      (format t "<WAITING ~A>~%" name)))
+	(format t "<RUNNING ~A>~%" name)
+	t)
+      (progn
+	(format t "<WAITING ~A>~%" name)
+	nil)))
+
+
+(defparameter *timer-process-wait-counts* nil)
+
+
+(defun aget (key alist &optional (test #'eql))
+  "Shortcut to directly obtain value from an alist by key"
+  (cdr (assoc key alist :test test)))
+
+
+(defun set-timer-waits (id &optional (value-or-fn 0))
+  (labels ((const-f-ignore-x (const)
+	     #'(lambda (x) (declare (ignore x)) const)))
+    (do ((fn (if (equal (type-of value-or-fn) 'function)
+		 value-or-fn
+		 (const-f-ignore-x value-or-fn)))
+	 (i 0 (+ i 1)) fin)
+	((or fin (= i (length *timer-process-wait-counts*)))
+	 (when (not fin)
+	   (push (cons id (funcall fn 0)) *timer-process-wait-counts*)))
+      (destructuring-bind (timer . waits) (elt *timer-process-wait-counts* i)
+	(when (equal timer id)
+	  (setf (cdr (elt *timer-process-wait-counts* i)) (funcall fn waits))
+	  (setf fin t))))))
+
+
+(defun increment-timer-waits (id &optional (value 1))
+  (set-timer-waits id #'(lambda (x) (+ x value))))
 
 
 ;;; PYTHON-SPECIFIC FUNCTIONS:
@@ -446,7 +495,20 @@ def watch_for_keyboard_interrupt():
 
 
 (defun timer-init-p (name) (gethash name *python-initialization*))
-    
+
+(defparameter *scheduled-intervals* nil)
+(defparameter *scheduled-interval-mutex* (sb-thread:make-mutex))
+
+(defun get-scheduled-interval (name)
+  (sb-thread:with-mutex (*scheduled-interval-mutex*)
+    (aget name *scheduled-intervals* #'equal)))
+
+(defun set-scheduled-interval (name interval)
+  (sb-thread:with-mutex (*scheduled-interval-mutex*)
+    (let ((current (assoc name *scheduled-intervals* :test #'equal)))
+      (if current
+	  (setf (cdr current) interval)
+	  (push (cons name interval) *scheduled-intervals*)))))
 
 (defmacro create-python-timer (name init-fn step-expr)
   (let ((instance-name
@@ -474,8 +536,19 @@ def watch_for_keyboard_interrupt():
 	 (setf (gethash ,name *python-initialization*) t))
        (defun ,run-fn-name (&optional (id ,instance-name))
 	 (cl-moc::run-step id ,step-expr ,name))
+;;	 (when (not (cl-moc::run-step id ,step-expr ,name))
+;;	   (eval '(increment-timer-waits ,timer-name))
+;;	   (when (>= (eval '(aget ,timer-name *timer-process-wait-counts*
+;;			    #'equal)) 5)
+;;	     (eval '(funcall (set-timer-waits ,timer-name)))
+;;	     (eval '(funcall ,cancel-fn-name))
+;;	     (eval '(funcall ,init-fn-name))
+;;	     (eval '(funcall ,schedule-fn-name
+;;		     (get-scheduled-interval ,name))))))
        (defparameter ,timer-name nil)
        (defun ,schedule-fn-name (repeat-interval)
+	 (set-scheduled-interval ,name repeat-interval)
+	 (set-timer-waits ,timer-name)
 	 (schedule-python-name ,name repeat-interval :delay-seconds 5))
        (defun ,cancel-fn-name () (cancel-python-timer ,name)))))
 
